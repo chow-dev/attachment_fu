@@ -1,7 +1,7 @@
 module Technoweenie # :nodoc:
   module AttachmentFu # :nodoc:
     @@default_processors = %w(ImageScience Rmagick MiniMagick Gd2 CoreImage)
-    @@tempfile_path      = File.join(RAILS_ROOT, 'tmp', 'attachment_fu')
+    @@tempfile_path      = ::Rails.root.join('tmp', 'attachment_fu')
     @@content_types      = [
       'image/jpeg',
       'image/pjpeg',
@@ -196,49 +196,21 @@ module Technoweenie # :nodoc:
         base.after_save :after_process_attachment
         base.after_destroy :destroy_file
         base.after_validation :process_attachment
-        if defined?(::ActiveSupport::Callbacks)
-          base.define_callbacks :after_resize, :after_attachment_saved, :before_thumbnail_saved
-        end
       end
 
-      unless defined?(::ActiveSupport::Callbacks)
-        # Callback after an image has been resized.
-        #
-        #   class Foo < ActiveRecord::Base
-        #     acts_as_attachment
-        #     after_resize do |record, img|
-        #       record.aspect_ratio = img.columns.to_f / img.rows.to_f
-        #     end
-        #   end
-        def after_resize(&block)
-          write_inheritable_array(:after_resize, [block])
-        end
+      def set_before_thumbnail_saved_callback &block
+        set_callback :before_thumbnail_saved, :unless => proc {|thumb| thumb.parent_id.nil? } , &block
+      end
 
-        # Callback after an attachment has been saved either to the file system or the DB.
-        # Only called if the file has been changed, not necessarily if the record is updated.
-        #
-        #   class Foo < ActiveRecord::Base
-        #     acts_as_attachment
-        #     after_attachment_saved do |record|
-        #       ...
-        #     end
-        #   end
-        def after_attachment_saved(&block)
-          write_inheritable_array(:after_attachment_saved, [block])
-        end
+      def set_after_attachment_saved_callback &block
+        set_callback :after_attachment_saved, :if => proc {|att| att.parent_id.nil? }, &block
+      end
 
-        # Callback before a thumbnail is saved.  Use this to pass any necessary extra attributes that may be required.
-        #
-        #   class Foo < ActiveRecord::Base
-        #     acts_as_attachment
-        #     before_thumbnail_saved do |thumbnail|
-        #       record = thumbnail.parent
-        #       ...
-        #     end
-        #   end
-        def before_thumbnail_saved(&block)
-          write_inheritable_array(:before_thumbnail_saved, [block])
-        end
+      def set_after_resize_callback &block
+        ::Magick::Image.send(:include, ActiveSupport::Callbacks)
+        ::Magick::Image.extend(ActiveSupport::Callbacks::ClassMethods)
+        ::Magick::Image.define_callbacks :after_resize
+        ::Magick::Image.set_callback :after_resize, &block
       end
 
       # Get the thumbnail class, which is the current attachment class by default.
@@ -250,7 +222,7 @@ module Technoweenie # :nodoc:
 
       # Copies the given file path to a new tempfile, returning the closed tempfile.
       def copy_to_temp_file(file, temp_base_name)
-        returning Tempfile.new(temp_base_name, Technoweenie::AttachmentFu.tempfile_path) do |tmp|
+        Tempfile.new(temp_base_name, Technoweenie::AttachmentFu.tempfile_path).tap do |tmp|
           tmp.close
           FileUtils.cp file, tmp.path
         end
@@ -258,7 +230,7 @@ module Technoweenie # :nodoc:
 
       # Writes the given data to a new tempfile, returning the closed tempfile.
       def write_to_temp_file(data, temp_base_name)
-        returning Tempfile.new(temp_base_name, Technoweenie::AttachmentFu.tempfile_path) do |tmp|
+        Tempfile.new(temp_base_name, Technoweenie::AttachmentFu.tempfile_path).tap do |tmp|
           tmp.binmode
           tmp.write data
           tmp.close
@@ -308,14 +280,14 @@ module Technoweenie # :nodoc:
       # Creates or updates the thumbnail for the current attachment.
       def create_or_update_thumbnail(temp_file, file_name_suffix, *size)
         thumbnailable? || raise(ThumbnailError.new("Can't create a thumbnail if the content type is not an image or there is no parent_id column"))
-        returning find_or_initialize_thumbnail(file_name_suffix) do |thumb|
+        find_or_initialize_thumbnail(file_name_suffix).tap do |thumb|
           thumb.temp_paths.unshift temp_file
           thumb.send(:'attributes=', {
             :content_type             => content_type,
             :filename                 => thumbnail_name_for(file_name_suffix),
             :thumbnail_resize_options => size
           }, false)
-          callback_with_args :before_thumbnail_saved, thumb
+          thumb.run_callbacks :before_thumbnail_saved
           thumb.save!
         end
       end
@@ -429,7 +401,7 @@ module Technoweenie # :nodoc:
 
         def sanitize_filename(filename)
           return unless filename
-          returning filename.strip do |name|
+          filename.strip.tap do |name|
             # NOTE: File.basename doesn't work right with Windows paths on Unix
             # get only the filename, not the whole path
             name.gsub! /^.*(\\|\/)/, ''
@@ -493,7 +465,7 @@ module Technoweenie # :nodoc:
             save_to_storage
             @temp_paths.clear
             @saved_attachment = nil
-            callback :after_attachment_saved
+            run_callbacks :after_attachment_saved
           end
         end
 
@@ -508,37 +480,7 @@ module Technoweenie # :nodoc:
 
         # Yanked from ActiveRecord::Callbacks, modified so I can pass args to the callbacks besides self.
         # Only accept blocks, however
-        if ActiveSupport.const_defined?(:Callbacks)
-          # Rails 2.1 and beyond!
-          def callback_with_args(method, arg = self)
-            notify(method)
-
-            result = run_callbacks(method, { :object => arg }) { |result, object| result == false }
-
-            if result != false && respond_to_without_attributes?(method)
-              result = send(method)
-            end
-
-            result
-          end
-
-          def run_callbacks(kind, options = {}, &block)
-            options.reverse_merge!( :object => self )
-            self.class.send("#{kind}_callback_chain").run(options[:object], options, &block)
-          end
-        else
-          # Rails 2.0
-          def callback_with_args(method, arg = self)
-            notify(method)
-
-            result = nil
-            callbacks_for(method).each do |callback|
-              result = callback.call(self, arg)
-              return false if result == false
-            end
-            result
-          end
-        end
+        # rails 3 callback is replaced by run_callbacks
 
         # Removes the thumbnails for the attachment, if it has any
         def destroy_thumbnails
