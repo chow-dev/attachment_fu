@@ -206,13 +206,6 @@ module Technoweenie # :nodoc:
         set_callback :after_attachment_saved, :if => proc {|att| att.parent_id.nil? }, &block
       end
 
-      def set_after_resize_callback &block
-        ::Magick::Image.send(:include, ActiveSupport::Callbacks)
-        ::Magick::Image.extend(ActiveSupport::Callbacks::ClassMethods)
-        ::Magick::Image.define_callbacks :after_resize
-        ::Magick::Image.set_callback :after_resize, &block
-      end
-
       # Get the thumbnail class, which is the current attachment class by default.
       # Configure this with the :thumbnail_class option.
       def thumbnail_class
@@ -247,7 +240,7 @@ module Technoweenie # :nodoc:
 
     module InstanceMethods
       def self.included(base)
-        base.define_callbacks *[:after_resize, :after_attachment_saved, :before_thumbnail_saved] if base.respond_to?(:define_callbacks)
+        base.define_callbacks *[:after_attachment_saved, :before_thumbnail_saved] if base.respond_to?(:define_callbacks)
       end
 
       # Checks whether the attachment's content type is an image content type
